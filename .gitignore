@@ -1,0 +1,10 @@
+# Matterport's keys: extract your own from the APK, never commit them.
+certs/*
+!certs/README.md
+data/
+__pycache__/
+*.bin
+*.jxr
+*.tif
+*.apk
+*.xapk

@@ -1,0 +1,8 @@
+.git
+certs
+data
+contrib
+*.bin
+*.apk
+*.xapk
+**/__pycache__

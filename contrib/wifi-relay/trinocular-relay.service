@@ -1,0 +1,13 @@
+[Unit]
+Description=trinocular: relay LAN TCP 8443 to the Pro2 over WiFi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/socat -d TCP-LISTEN:8443,bind=@BIND@,reuseaddr,fork TCP:10.77.80.1:443,connect-timeout=5
+Restart=always
+RestartSec=5
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
