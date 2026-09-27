@@ -1,14 +1,9 @@
 """Turn an unpacked sweep into things a person can look at.
 
-Per color camera: white-balance the six frames, fuse them (Mertens —
-no response curve needed, works straight off the raw stack), rotate upright.
-Per depth sensor: turbo-colored depth strip and an IR strip (3600 px wide,
-probably 0.1°/column of azimuth — see PROTOCOL.md).
-
-CAVEAT: the fusion assumes the six frames are one exposure stack at one
-heading.  That's what they looked like from a Pro2 that never rotated; on a
-mounted sweep they are more likely six 60° headings, and fusing them would
-smear six views together.  See "What the six frames per camera are".
+Per color camera (cam0 up, cam1 level, cam2 down): the six frames are six
+headings 60° apart, so lay them side by side as a ring.  No stitching yet.
+Per depth sensor (0 up, 1 level, 2 down): turbo-colored depth strip and an IR
+strip, 3600 px = 360° of azimuth, flipped to run the same way as the rings.
 Everything lands next to the raw parts as JPEGs plus a small manifest.
 """
 import glob
@@ -19,10 +14,11 @@ import cv2
 import numpy as np
 
 THUMB_W = 480
-# Sensors are mounted portrait.  cw was upright on our (unmounted) sweeps, which
-# were shot with the rig on its side — so this stays a knob until confirmed.
+RING_H = 720        # ring height; 6 frames at 4:3 -> 5760 px wide
+# Frames come off the sensor upright (landscape) on a mounted Pro2.  The old
+# "portrait, rotate cw" came from sweeps shot with the rig on its side.
 ROTATE = {"cw": cv2.ROTATE_90_CLOCKWISE, "ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
-          "180": cv2.ROTATE_180}.get(os.environ.get("TRINOCULAR_ROTATE", "cw"))
+          "180": cv2.ROTATE_180}.get(os.environ.get("TRINOCULAR_ROTATE", "none"))
 
 
 def _wb_gains(stack):
@@ -32,28 +28,34 @@ def _wb_gains(stack):
     return m.mean() / np.maximum(m, 1e-6)
 
 
-def fuse_camera(tifs):
-    """Six 16-bit RGB exposures -> one upright 8-bit BGR image."""
-    stack = [cv2.imread(t, cv2.IMREAD_UNCHANGED) for t in tifs]
-    stack = [s for s in stack if s is not None]
-    if not stack:
+def ring(tifs):
+    """Six 16-bit RGB headings -> one 8-bit BGR strip, frames side by side.
+
+    Frames come off the camera already auto-exposed (their means barely move),
+    and dividing by the protobuf's exposure x gain makes a uniform rug swing
+    30x, so those numbers don't map to frames the way we'd assume.  Shared
+    white balance, per-frame stretch.
+    """
+    frames = [cv2.imread(t, cv2.IMREAD_UNCHANGED) for t in tifs]
+    frames = [f.astype(np.float32) for f in frames if f is not None]
+    if not frames:
         return None
-    gains = _wb_gains(stack)
-    eight = [np.clip(s.astype(np.float32) * gains / 256, 0, 255).astype(np.uint8)
-             for s in stack]
-    if len(eight) > 1:
-        fused = cv2.createMergeMertens().process(eight)
-        # Mertens output is ~[0,1] but tends flat; stretch before gamma.
-        lo, hi = np.percentile(fused, (0.5, 99.7))
-        fused = np.clip((fused - lo) / max(hi - lo, 1e-6), 0, 1)
-    else:
-        fused = eight[0].astype(np.float32) / 255
-    out = (np.power(fused, 1 / 1.4) * 255).astype(np.uint8)
-    return cv2.rotate(out, ROTATE) if ROTATE is not None else out
+    gains = _wb_gains(frames)
+    out = []
+    for f in frames:
+        f *= gains
+        lo, hi = np.percentile(f[::4, ::4], (0.5, 99.7))
+        f = np.power(np.clip((f - lo) / max(hi - lo, 1e-6), 0, 1), 1 / 1.8)
+        f = (f * 255).astype(np.uint8)
+        if ROTATE is not None:
+            f = cv2.rotate(f, ROTATE)
+        h, w = f.shape[:2]
+        out.append(cv2.resize(f, (w * RING_H // h, RING_H), interpolation=cv2.INTER_AREA))
+    return np.hstack(out)
 
 
 def depth_strip(path):
-    d = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    d = _flip(cv2.imread(path, cv2.IMREAD_UNCHANGED))
     if d is None:
         return None, 0.0, None
     valid = d > 0
@@ -66,6 +68,13 @@ def depth_strip(path):
     return img, float(valid.mean()), valid
 
 
+def _flip(img):
+    # Raw depth columns run opposite to the color frame order (couch, chair,
+    # desk, chair left-to-right in depth = color f5..f2).  Flip for display so
+    # both read the same way; the PNGs on disk stay as the camera sent them.
+    return None if img is None else cv2.flip(img, 1)
+
+
 def blend(depth_img, valid, ir):
     """Depth hue over IR texture — same sensor, same pixel grid, no registration."""
     ir = cv2.equalizeHist(ir).astype(np.float32)[..., None] / 255
@@ -74,29 +83,29 @@ def blend(depth_img, valid, ir):
     return out.astype(np.uint8)
 
 
-def _save(img, path, quality=90):
+def _save(img, path, quality=90, thumb_w=THUMB_W):
     cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     h, w = img.shape[:2]
-    t = cv2.resize(img, (THUMB_W, max(1, h * THUMB_W // w)), interpolation=cv2.INTER_AREA)
+    t = cv2.resize(img, (thumb_w, max(1, h * thumb_w // w)), interpolation=cv2.INTER_AREA)
     cv2.imwrite(path.replace(".jpg", ".thumb.jpg"), t, [cv2.IMWRITE_JPEG_QUALITY, 82])
 
 
 def develop(d):
     """Process an unpacked sweep dir in place.  Returns the manifest dict."""
-    man = {"color": [], "depth": [], "ir": [], "blend": []}
+    man = {"rings": [], "depth": [], "ir": [], "blend": []}
     cams = sorted({os.path.basename(p).split("_")[0] for p in glob.glob(f"{d}/cam*_f*.tif")})
     for cam in cams:
-        img = fuse_camera(sorted(glob.glob(f"{d}/{cam}_f*.tif")))
+        img = ring(sorted(glob.glob(f"{d}/{cam}_f*.tif")))
         if img is not None:
-            _save(img, f"{d}/{cam}.jpg")
-            man["color"].append(f"{cam}.jpg")
+            _save(img, f"{d}/{cam}_ring.jpg", thumb_w=1600)
+            man["rings"].append(f"{cam}_ring.jpg")
     for rng in sorted(glob.glob(f"{d}/depth*_range.png")):
         s = os.path.basename(rng).split("_")[0]
         img, cov, valid = depth_strip(rng)
         if img is not None:
             _save(img, f"{d}/{s}_depth.jpg")
             man["depth"].append({"file": f"{s}_depth.jpg", "coverage": round(cov, 3)})
-        ir = cv2.imread(f"{d}/{s}_ir.png", cv2.IMREAD_GRAYSCALE)
+        ir = _flip(cv2.imread(f"{d}/{s}_ir.png", cv2.IMREAD_GRAYSCALE))
         if ir is not None:
             _save(cv2.cvtColor(ir, cv2.COLOR_GRAY2BGR), f"{d}/{s}_ir.jpg")
             man["ir"].append(f"{s}_ir.jpg")

@@ -32,16 +32,21 @@ Works:
 - Parsing the sweep container: 3 depth sensors (16-bit range + IR per sensor)
   and 3 color cameras (6 JPEG XR frames each, 2560×1920, 16-bit RGB)
 - The web app, end to end, including importing `.bin` files the app captured
+- Layout, confirmed on a mounted sweep: color cameras point up / level / down,
+  each takes **six frames at 60° headings**; depth strips are **360° of
+  azimuth** at 0.1°/column
 
-Not yet confirmed — **read before you build on it**:
+Still open:
 
-- **What the six color frames per camera are.**  Probably six headings 60°
-  apart; possibly an exposure stack.  The web app currently fuses them as a
-  stack, which is wrong if they're headings.
-- **Depth axes and units.**  The strips are 3600 px wide, very likely
-  0.1°/column of azimuth.  Units unknown.
+- **Depth units.**  0.25 mm/count fits (Matterport3D's convention) but hasn't
+  met a tape measure.
+- **Depth ↔ color alignment.**  About 50° apart in azimuth; the exact offset
+  should be in the calibration blocks.  No stitching or registration yet.
+- **Exposure metadata.**  The per-frame exposure/gain values don't track frame
+  brightness the way you'd expect.
 
-Both are unconfirmed for the same embarrassing reason — see *Mount it* below.
+It took us two unmounted sweeps and a wrong theory to get here — see *Mount it*
+below.
 
 Missing on FW 1.1.620: `/setTime`, `/getImage`, `/powerCycle`, `/getCapabilities`
 (all 404).
@@ -76,8 +81,10 @@ Missing on FW 1.1.620: `/setTime`, `/getImage`, `/powerCycle`, `/getCapabilities
 ## The web app
 
 A dark-room page: live camera status, a *Fire sweep* button, and a feed of
-developed sweeps — the three color views, false-color depth strips, IR strips,
-and a depth×IR blend (same sensor, same pixel grid, so no registration needed).
+developed sweeps — each color camera's six headings laid side by side and
+stacked up/level/down (a rough, unstitched panorama of the room), plus
+false-color depth strips, IR strips, and a depth×IR blend (same sensor, same
+pixel grid, so no registration needed).
 You can also import `.bin` files you already have.
 
 ```bash
@@ -103,7 +110,7 @@ If the host can't be on the camera's WiFi, run the
 | `CAMERA_URL` | `https://10.77.80.1` | Camera, or relay |
 | `TRINOCULAR_CERTS` | `./certs` (`/certs` in Docker) | The three APK files |
 | `TRINOCULAR_DATA` | `./data` (`/data` in Docker) | Sweeps: `raw.bin` + developed parts |
-| `TRINOCULAR_ROTATE` | `cw` | Color sensor is portrait: `cw`, `ccw`, `180`, `none` |
+| `TRINOCULAR_ROTATE` | `none` | Rotate color frames: `cw`, `ccw`, `180`, `none` |
 
 API: `GET /api/state`, `POST /api/sweeps {"mode": 2}`, `POST /api/import`
 (multipart `.bin`), `POST /api/cancel`, `GET /api/sweeps[/{id}]`,
@@ -119,8 +126,10 @@ never turned once, because the stub was just spinning in free air.
 We spent two sweeps' worth of analysis explaining the results: depth rows that
 were oddly constant across all 3600 columns ("so x isn't azimuth"), six color
 frames of the same view ("so it's an exposure stack"), three color cameras
-looking in three horizontal directions ("strange stack geometry").  Every one
-of those was a camera lying on its side, standing still.
+looking in three horizontal directions ("strange stack geometry"), frames that
+needed rotating 90° to look upright ("portrait-mounted sensor").  Every one of
+those was a camera lying on its side, standing still.  The first sweep on a
+threaded rod answered all four in 45 seconds.
 
 So: tripod, or a threaded rod with a jam nut, and level it.  If your depth
 strips look like smeared horizontal bands, check that before you check your

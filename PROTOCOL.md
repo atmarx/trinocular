@@ -2,8 +2,8 @@
 
 Reverse-engineered from the Matterport Capture Android app v2.82.0 (APKPure)
 and one Pro2 on firmware `1.1.620.16618.35abb9f-P`.  Everything here was seen on
-that one camera; other firmware may differ.  Claims marked **unconfirmed** are
-our best reading, not verified.
+that one camera; other firmware may differ.  Where we're still guessing, we
+say so.
 
 ## Network
 
@@ -269,13 +269,24 @@ Each field 5 block is a nested protobuf containing three images:
 | (embedded JPEG) | JFIF JPEG | small | **Thumbnail** (~26KB preview) |
 
 The three sensors have slightly different vertical resolutions (455–459 px).
-Width is always 3600 px — most likely azimuth (0.1° per column), **unconfirmed**.
-Every sweep so far (Aug 1, Sep 25) was shot with the Pro2 lying on its side:
-the drive turns the body against its mount, so with the mount stub in free
-air the body never rotated.  That explains the depth rows being near-constant
-across all 3600 columns and the three color cameras (a vertical stack) seeing
-three horizontal headings.  **The Pro2 must be mounted (tripod / threaded
-stud) to sweep.**  Axes and units get confirmed on the first mounted sweep.
+Confirmed on a mounted sweep (Sep 27):
+
+- **x is azimuth**: 3600 columns = 360°, 0.1° per column.  Rows are elevation.
+- **Sensor order is up / level / down**: depth0 looks up, depth1 level,
+  depth2 down (it sees mostly floor and has the shortest ranges).
+- **Columns run opposite to the color frame order.**  Reading a raw depth PNG
+  left to right matches the color frames f5 → f0.  trinocular's viewer flips
+  the strips so both read the same way; the files on disk are left alone.
+- Depth is ~50° of azimuth off from the color frames (different mounting
+  angles on the body); the calibration blocks should carry the exact offset.
+- **Units: probably 0.25 mm per count** (Matterport3D's convention, 4000 = 1 m).
+  In a living room the level sensor reads 2494–29640 → 0.6–7.4 m, which fits.
+  Not yet checked with a tape measure.
+
+Earlier sweeps (Aug 1, Sep 25) were shot with the Pro2 lying on its side.  The
+drive turns the body against the stub on its base, so with the stub in free
+air the body never rotated: near-constant depth rows, six color frames of one
+view.  **Mount it on a tripod or threaded rod to sweep.**
 
 ### Field 6: Color camera data (×3 cameras)
 
@@ -287,10 +298,10 @@ Each field 6 block is a nested protobuf:
 | 2 | bytes(51) | Pose/calibration matrix (4×4 floats) |
 | 3 | bytes(39) | Lens distortion parameters |
 | 4 | float | Field of view: 1.0472 rad (≈ 60°) |
-| 5 | bytes (×6) | **Six frames** (JPEG XR format) — see below for what they are |
+| 5 | bytes (×6) | **Six frames, one per 60° heading** (JPEG XR format) |
 | 9 | varint | Exposure mode (2) |
 | 10 | varint (×6) | Per-exposure flags |
-| 11 | float (×6) | Exposure times (0.0002–0.0022 sec) |
+| 11 | float (×6) | Exposure times (0.0001–0.0033 sec) — see note below |
 | 12 | float (×6) | Gain multipliers (0.53–1.19) |
 | 13 | float (×6) | Per-channel gains |
 | 14 | float (×6) | White balance coefficients |
@@ -305,32 +316,28 @@ Each exposure frame is a **JPEG XR** (ISO/IEC 29199-2, formerly HD Photo) file:
 - Magic bytes: `49 49 BC 01` (little-endian JPEG XR container)
 - Resolution: **2560 × 1920** pixels (~4.9 MP), 60° FOV
 - Decodes to **16-bit RGB** — full color, not luminance-only as first noted
-- Sensor is mounted portrait: rotate 90° for upright
+- Stored upright (landscape) — no rotation needed on a mounted camera
 - No white balance applied — raw output has a strong green cast; the per-frame
   WB coefficients (field 14) are presumably what the app applies
 - Decode with: `JxrDecApp -i file.jxr -o file.tif` (libjxr-tools), or just run
   `python3 -m trinocular.sweepfmt sweep.bin`, which carves and decodes everything
 
-### What the six frames per camera are (**unconfirmed**)
+### What the six frames per camera are
 
-On our sweeps all six frames from one camera share the **same viewpoint**,
-taken sequentially in time (a person walking through the shot moves between
-frames), with exposure/gain differing per frame in no monotonic order.  We
-first read that as an exposure stack at one heading.
+**Six headings, 60° apart** — confirmed on a mounted sweep (Sep 27).  With
+the 60° FOV they tile 360° with little overlap.  The three cameras are
+stacked **cam0 up, cam1 level, cam2 down**; lay each camera's six frames side
+by side and stack the three rows and you get a rough, unstitched panorama of
+the room.  This matches the rig described in the Matterport3D paper (Chang et
+al., 3DV 2017): three color + three depth cameras, six stops per sweep.
 
-But those sweeps came from a Pro2 lying on its side that never rotated (see
-the depth notes), and the Matterport3D dataset paper (Chang et al., 3DV 2017)
-describes the rig as three color + three depth cameras pointing slightly up,
-level, and slightly down, rotating to **6 orientations** and taking an HDR
-photo from each color camera at every stop, with depth captured continuously.
-That fits everything here: 6 frames × 60° FOV = 360°, 3600 depth columns =
-0.1°/column, and 16-bit JPEG XR frames that are plausibly already-HDR.
+Each frame is auto-exposed on its own: mean pixel values barely move between
+frames.  Dividing by the field 11 × field 12 values makes a uniform rug vary
+30×, so those numbers don't line up with frames in the order we'd assume (or
+mean something else).  Unsolved.
 
-So the likely reading is **six headings, 60° apart, each auto-exposed** — the
-"same viewpoint" was just a camera that didn't turn.  The three cameras seeing
-three horizontal headings is the up/level/down stack turned sideways.  A
-mounted sweep settles it; until then `develop.py` fuses the six frames as a
-stack, which is only right for an unrotated camera.
+(On an unmounted Pro2 the six frames all show the same view, sequential in
+time — which is how we first misread them as an exposure stack.)
 
 ### Complete data inventory per sweep
 
@@ -347,8 +354,9 @@ stack, which is only right for an unrotated camera.
 - Whether `getImage` works on other firmware versions (404 on FW 1.1.620)
 - Whether the Insta360 SDK uses a separate protocol for motor/sensor control
 - The exact meaning of `cameraState` integer values (firmware-side state machine)
-- Whether the 6 frames per camera are 6 headings (likely) or an exposure stack
-- Depth units and the exact axis mapping (needs a mounted, level sweep)
+- What fields 11/12 (exposure/gain) actually index — they don't track frame brightness
+- Depth units (0.25 mm/count fits; tape-measure check pending) and the exact
+  depth ↔ color azimuth offset from the calibration blocks
 - Whether different `captureMode` values produce different data layouts
 - The protobuf .proto schema (could be reconstructed from field analysis)
 - What fields 16/17 contain (possibly point cloud or mesh data)

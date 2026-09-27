@@ -41,6 +41,8 @@ main { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 18p
 .meta { font: 12px var(--mono); color: var(--dim); margin-left: auto; }
 .frames { display: grid; grid-template-columns: repeat(3, minmax(0, 220px)); gap: 8px; margin-top: 12px; }
 .frames img { width: 100%; min-width: 0; display: block; border-radius: 3px; cursor: zoom-in; background: #000; aspect-ratio: 3/4; object-fit: cover; }
+.rings { display: grid; gap: 0; margin-top: 12px; background: #000; }
+.rings img { width: 100%; display: block; cursor: zoom-in; }
 .strips { display: grid; gap: 2px; margin-top: 10px; }
 .strips img { width: 100%; display: block; cursor: zoom-in; aspect-ratio: auto; object-fit: fill; }
 .strips-head { display: flex; gap: 8px; margin-top: 12px; font: 12px var(--mono); color: var(--dim); align-items: center; }
@@ -123,11 +125,13 @@ function card(s) {
   const kind = stripKind[s.id] || (s.develop?.blend?.length ? "blend" : "depth");
   let body = "";
   if (d) {
-    body += `<div class="frames">${d.color.map(f => img(base + f.replace(".jpg", ".thumb.jpg"))).join("")}</div>`;
+    // rings: cam0 up / cam1 level / cam2 down, six 60° headings each — stacked they read as the room
+    if (d.rings?.length) body += `<div class="rings" title="Six headings per camera, side by side — not stitched">${d.rings.map(f => img(base + f.replace(".jpg", ".thumb.jpg"))).join("")}</div>`;
+    else if (d.color?.length) body += `<div class="frames">${d.color.map(f => img(base + f.replace(".jpg", ".thumb.jpg"))).join("")}</div>`;
     const strips = kind === "ir" ? d.ir : kind === "blend" ? (d.blend || []) : d.depth.map(x => x.file);
     if (strips.length) {
       const cov = d.depth.map(x => Math.round(x.coverage * 100) + "%").join(" · ");
-      body += `<div class="strips-head" title="Raw sensor layout — x is probably azimuth, unconfirmed until a mounted sweep (see PROTOCOL.md)">depth sensors · raw layout
+      body += `<div class="strips-head" title="x is azimuth, flipped to run the same way as the color rings; ~50° offset from color not yet corrected">depth sensors · 360°
         <button data-kind="depth" data-id="${s.id}" class="${kind === "depth" ? "on" : ""}">depth</button>
         <button data-kind="ir" data-id="${s.id}" class="${kind === "ir" ? "on" : ""}">IR</button>
         ${d.blend?.length ? `<button data-kind="blend" data-id="${s.id}" class="${kind === "blend" ? "on" : ""}">depth × IR</button>` : ""}
